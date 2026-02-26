@@ -71,6 +71,11 @@ jobs:
           echo "⚠ Token validation check: repository may be public or token may not have access"
         fi
     
+    - name: Check available memory
+      run: |
+        echo "Available memory:"
+        free -h
+    
     - name: Run ORT
       uses: oss-review-toolkit/ort-ci-github-action@v1
       env:
@@ -79,6 +84,8 @@ jobs:
         ORT_VCS_GIT_PASSWORD: ${{ github.event.inputs.github_token || secrets.GITHUB_TOKEN }}
         GIT_USERNAME: oauth2
         GIT_PASSWORD: ${{ github.event.inputs.github_token || secrets.GITHUB_TOKEN }}
+        _JAVA_OPTIONS: "-Xmx6g -Xms2g"
+        JAVA_OPTS: "-Xmx6g -Xms2g"
       with:
         vcs-url: '${{ github.event.inputs.vcs_url }}'
         allow-dynamic-versions: 'true'
@@ -91,5 +98,8 @@ jobs:
             evaluator,
             reporter,
             upload-results
-        ort-cli-args: '-P ort.scanner.skipExcluded=true'
-        ort-cli-scan-args: '--package-types=PROJECT'    
+        ort-cli-args: >-
+          -P ort.scanner.skipExcluded=true
+          -P ort.analyzer.enableNestedDependencies=false
+          -P ort.downloader.allowMovingRevisions=true
+        ort-cli-scan-args: '--package-types=PROJECT'
