@@ -21,6 +21,9 @@ jobs:
       security-events: write
 
     steps:
+    # ----------------------------------------------------
+    # 1️⃣ Checkout ONLY ORT configuration (separate folder)
+    # ----------------------------------------------------
     - name: Checkout ORT config
       uses: actions/checkout@v4
       with:
@@ -30,68 +33,83 @@ jobs:
     - name: Setup ORT configuration
       run: |
         mkdir -p "$HOME/.ort/config"
-        mv .ort-config "$HOME/.ort/config"
-        cp $HOME/.ort/config/.ort-config/evaluator.rules.kts "$HOME/.ort/config/evaluator.rules.kts"
-        cp $HOME/.ort/config/.ort-config/license-classifications.yml "$HOME/.ort/config/license-classifications.yml"
+        cp .ort-config/evaluator.rules.kts "$HOME/.ort/config/" || true
+        cp .ort-config/license-classifications.yml "$HOME/.ort/config/" || true
 
-    - name: Detect if repository is Rust-based
+    # ----------------------------------------------------
+    # 2️⃣ Detect Primary Language (NO CLONING)
+    # ----------------------------------------------------
+    - name: Detect primary language
       id: detect_rust
       run: |
-        echo "Cloning repository to inspect package managers..."
-        git clone --depth 1 "${{ github.event.inputs.vcs_url }}" repo || true
-        
-        if find repo -name "Cargo.toml" | grep -q .; then
-          echo "Rust detected"
+        OWNER=$(echo "${{ github.event.inputs.vcs_url }}" | sed -E 's|.*github\.com[:/]([^/]+)/.*|\1|')
+        REPO=$(echo "${{ github.event.inputs.vcs_url }}" | sed -E 's|.*github\.com[:/][^/]+/([^/.]+).*|\1|')
+
+        LANGUAGE=$(curl -s https://api.github.com/repos/$OWNER/$REPO | jq -r '.language')
+
+        echo "Primary language: $LANGUAGE"
+
+        if [ "$LANGUAGE" = "Rust" ]; then
           echo "rust=true" >> $GITHUB_OUTPUT
         else
-          echo "Rust NOT detected"
           echo "rust=false" >> $GITHUB_OUTPUT
         fi
 
+    # ----------------------------------------------------
+    # 3️⃣ Show Available Memory
+    # ----------------------------------------------------
     - name: Show memory info
       run: free -h
 
-    - name: Run ORT (Non-Rust Mode - Default)
+    # ----------------------------------------------------
+    # 4️⃣ Run ORT (Default Mode - Cargo Disabled)
+    # ----------------------------------------------------
+    - name: Run ORT (Default Mode)
       if: steps.detect_rust.outputs.rust == 'false'
       uses: oss-review-toolkit/ort-ci-github-action@v1
       env:
-        ORT_DOCKER_OPTIONS: "--memory=12g"
-        _JAVA_OPTIONS: "-Xmx10g -Xms4g"
+        ORT_DOCKER_OPTIONS: "--memory=12g --memory-swap=12g"
+        ORT_JAVA_OPTS: "-Xmx8g -Xms4g"
         GITHUB_TOKEN: ${{ github.event.inputs.github_token || secrets.GITHUB_TOKEN }}
       with:
         vcs-url: '${{ github.event.inputs.vcs_url }}'
+        allow-dynamic-versions: 'false'
         run: >-
-            cache-dependencies,
-            labels,
-            analyzer,
-            scanner,
-            advisor,
-            evaluator,
-            reporter,
-            upload-results
+          cache-dependencies,
+          labels,
+          analyzer,
+          scanner,
+          advisor,
+          evaluator,
+          reporter,
+          upload-results
         ort-cli-args: >-
-          -P ort.analyzer.enabledPackageManagers=NPM,Yarn,PNPM,Gradle,Maven
+          -P ort.analyzer.enabledPackageManagers=NPM,Yarn,PNPM,Maven,Gradle
           -P ort.scanner.skipExcluded=true
           -P ort.analyzer.enableNestedDependencies=false
 
-    - name: Run ORT (Rust Mode Enabled)
+    # ----------------------------------------------------
+    # 5️⃣ Run ORT (Rust Mode - Cargo Enabled)
+    # ----------------------------------------------------
+    - name: Run ORT (Rust Mode)
       if: steps.detect_rust.outputs.rust == 'true'
       uses: oss-review-toolkit/ort-ci-github-action@v1
       env:
-        ORT_DOCKER_OPTIONS: "--memory=12g"
-        _JAVA_OPTIONS: "-Xmx10g -Xms4g"
+        ORT_DOCKER_OPTIONS: "--memory=12g --memory-swap=12g"
+        ORT_JAVA_OPTS: "-Xmx8g -Xms4g"
         GITHUB_TOKEN: ${{ github.event.inputs.github_token || secrets.GITHUB_TOKEN }}
       with:
         vcs-url: '${{ github.event.inputs.vcs_url }}'
+        allow-dynamic-versions: 'false'
         run: >-
-            cache-dependencies,
-            labels,
-            analyzer,
-            scanner,
-            advisor,
-            evaluator,
-            reporter,
-            upload-results
+          cache-dependencies,
+          labels,
+          analyzer,
+          scanner,
+          advisor,
+          evaluator,
+          reporter,
+          upload-results
         ort-cli-args: >-
           -P ort.scanner.skipExcluded=true
           -P ort.analyzer.enableNestedDependencies=false
