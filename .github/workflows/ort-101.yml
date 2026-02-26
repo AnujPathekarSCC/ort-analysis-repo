@@ -1,5 +1,6 @@
 name: ORT License Compliance Scan
-on:  
+
+on:
   workflow_dispatch:
     inputs:
       vcs_url:
@@ -7,9 +8,10 @@ on:
         required: true
         default: 'https://github.com/vercel/next.js'
       github_token:
-        description: 'GitHub Personal Access Token for private repository access'
+        description: 'GitHub Personal Access Token (optional)'
         required: false
         default: ''
+
 jobs:
   ort-scan:
     runs-on: ubuntu-latest
@@ -19,76 +21,68 @@ jobs:
       security-events: write
 
     steps:
-    - name: Checkout code
+    - name: Checkout ORT config
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0        
+        fetch-depth: 0
         path: ".ort-config"
-        
-    - name: Setup ORT configuration files
-      run: |
-        # Create ORT config directory     
-        mkdir -p "/$HOME/.ort/config"
-        
-        # Move Fetched Default Config into Place
-        mv .ort-config "/$HOME/.ort/config"
-     
-        # Copy evaluator rules to ORT config directory
-        cp /home/runner/.ort/config/.ort-config/evaluator.rules.kts "$HOME/.ort/config/evaluator.rules.kts"
-        cp /home/runner/.ort/config/.ort-config/license-classifications.yml "$HOME/.ort/config/license-classifications.yml"
 
-        echo "ORT configuration files setup complete"
-    
-    - name: Configure Git credentials for private repository access
-      if: github.event.inputs.github_token != ''
+    - name: Setup ORT configuration
       run: |
-        # Configure git to use the token for authentication
-        git config --global url."https://${{ github.event.inputs.github_token }}@github.com/".insteadOf "https://github.com/"
-        git config --global url."https://oauth2:${{ github.event.inputs.github_token }}@github.com/".insteadOf "https://github.com/"
-        # Store credentials for git credential helper
-        git config --global credential.helper store
-        echo "https://oauth2:${{ github.event.inputs.github_token }}@github.com" > ~/.git-credentials
-        echo "https://${{ github.event.inputs.github_token }}@github.com" >> ~/.git-credentials
-        # SSH configuration
-        mkdir -p ~/.ssh
-        chmod 700 ~/.ssh
-        ssh-keyscan -t rsa github.com >> ~/.ssh/known_hosts 2>/dev/null || true
-        chmod 600 ~/.git-credentials
-    
-    - name: Validate GitHub token and repository access
-      if: github.event.inputs.github_token != ''
+        mkdir -p "$HOME/.ort/config"
+        mv .ort-config "$HOME/.ort/config"
+        cp $HOME/.ort/config/.ort-config/evaluator.rules.kts "$HOME/.ort/config/evaluator.rules.kts"
+        cp $HOME/.ort/config/.ort-config/license-classifications.yml "$HOME/.ort/config/license-classifications.yml"
+
+    - name: Detect if repository is Rust-based
+      id: detect_rust
       run: |
-        OWNER=$(echo "${{ github.event.inputs.vcs_url }}" | sed -E 's|.*github\.com[:/]([^/]+)/.*|\1|')
-        REPO=$(echo "${{ github.event.inputs.vcs_url }}" | sed -E 's|.*github\.com[:/][^/]+/([^/.]+).*|\1|')
+        echo "Cloning repository to inspect package managers..."
+        git clone --depth 1 "${{ github.event.inputs.vcs_url }}" repo || true
         
-        echo "Testing token access to: $OWNER/$REPO"
-        
-        # Test if we can access the repository with the token
-        if curl -s -H "Authorization: token ${{ github.event.inputs.github_token }}" \
-          "https://api.github.com/repos/$OWNER/$REPO" | grep -q '"id"'; then
-          echo "✓ Token is valid and has access to the repository"
+        if find repo -name "Cargo.toml" | grep -q .; then
+          echo "Rust detected"
+          echo "rust=true" >> $GITHUB_OUTPUT
         else
-          echo "⚠ Token validation check: repository may be public or token may not have access"
+          echo "Rust NOT detected"
+          echo "rust=false" >> $GITHUB_OUTPUT
         fi
-    
-    - name: Check available memory
-      run: |
-        echo "Available memory:"
-        free -h
-    
-    - name: Run ORT
+
+    - name: Show memory info
+      run: free -h
+
+    - name: Run ORT (Non-Rust Mode - Default)
+      if: steps.detect_rust.outputs.rust == 'false'
       uses: oss-review-toolkit/ort-ci-github-action@v1
       env:
+        ORT_DOCKER_OPTIONS: "--memory=12g"
+        _JAVA_OPTIONS: "-Xmx10g -Xms4g"
         GITHUB_TOKEN: ${{ github.event.inputs.github_token || secrets.GITHUB_TOKEN }}
-        ORT_VCS_GIT_USERNAME: oauth2
-        ORT_VCS_GIT_PASSWORD: ${{ github.event.inputs.github_token || secrets.GITHUB_TOKEN }}
-        GIT_USERNAME: oauth2
-        GIT_PASSWORD: ${{ github.event.inputs.github_token || secrets.GITHUB_TOKEN }}
-        _JAVA_OPTIONS: "-Xmx6g -Xms2g"
-        JAVA_OPTS: "-Xmx6g -Xms2g"
       with:
         vcs-url: '${{ github.event.inputs.vcs_url }}'
-        allow-dynamic-versions: 'true'
+        run: >-
+            cache-dependencies,
+            labels,
+            analyzer,
+            scanner,
+            advisor,
+            evaluator,
+            reporter,
+            upload-results
+        ort-cli-args: >-
+          -P ort.analyzer.enabledPackageManagers=NPM,Yarn,PNPM,Gradle,Maven
+          -P ort.scanner.skipExcluded=true
+          -P ort.analyzer.enableNestedDependencies=false
+
+    - name: Run ORT (Rust Mode Enabled)
+      if: steps.detect_rust.outputs.rust == 'true'
+      uses: oss-review-toolkit/ort-ci-github-action@v1
+      env:
+        ORT_DOCKER_OPTIONS: "--memory=12g"
+        _JAVA_OPTIONS: "-Xmx10g -Xms4g"
+        GITHUB_TOKEN: ${{ github.event.inputs.github_token || secrets.GITHUB_TOKEN }}
+      with:
+        vcs-url: '${{ github.event.inputs.vcs_url }}'
         run: >-
             cache-dependencies,
             labels,
@@ -101,5 +95,3 @@ jobs:
         ort-cli-args: >-
           -P ort.scanner.skipExcluded=true
           -P ort.analyzer.enableNestedDependencies=false
-          -P ort.downloader.allowMovingRevisions=true
-        ort-cli-scan-args: '--package-types=PROJECT'
