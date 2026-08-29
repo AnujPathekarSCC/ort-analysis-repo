@@ -1,0 +1,132 @@
+name: ORT scan(both github and gitlab)
+
+on:
+  workflow_dispatch:
+    inputs:
+      vcs_url:
+        description: 'Repository URL to scan'
+        required: true
+        default: ''
+
+      vcs_revision:
+        description: 'Branch / Tag / Commit'
+        required: false
+        default: ''
+
+      github_token:
+        description: 'GitHub Personal Access Token for private repository access'
+        required: false
+        default: ''
+
+      gitlab_token:
+        description: 'GitLab Personal Access Token for private repository access'
+        required: false
+        default: ''
+
+jobs:
+  ort-scan:
+    runs-on: ubuntu-latest
+    name: ORT License Compliance Check
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+
+    # Step 1 — Checkout this repo (only for ORT configs)
+    - name: Checkout ORT config repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        path: ".ort-config"
+
+    # Step 2 — Setup ORT configuration
+    - name: Setup ORT configuration files
+      run: |
+
+        echo "Setting up ORT config..."
+
+        mkdir -p "$HOME/.ort/config"
+
+        mv .ort-config "$HOME/.ort/config/.ort-config"
+
+        cp "$HOME/.ort/config/.ort-config/evaluator.rules.kts" \
+           "$HOME/.ort/config/evaluator.rules.kts"
+
+        cp "$HOME/.ort/config/.ort-config/license-classifications.yml" \
+           "$HOME/.ort/config/license-classifications.yml"
+
+        echo "ORT config setup completed"
+
+    # Step 3 — Configure GitHub authentication (only if token provided)
+    - name: Configure GitHub credentials
+      if: github.event.inputs.github_token != ''
+      run: |
+
+        echo "Configuring GitHub authentication"
+
+        git config --global url."https://${{ github.event.inputs.github_token }}@github.com/".insteadOf "https://github.com/"
+        git config --global credential.helper store
+
+        echo "https://${{ github.event.inputs.github_token }}@github.com" > ~/.git-credentials
+
+        chmod 600 ~/.git-credentials
+
+    # Step 4 — Configure GitLab authentication (if GitLab token provided)
+    - name: Configure GitLab credentials
+      if: github.event.inputs.gitlab_token != ''
+      run: |
+
+        HOST=$(echo "${{ github.event.inputs.vcs_url }}" | awk -F/ '{print $3}')
+
+        echo "Detected Git host: $HOST"
+
+        git config --global url."https://oauth2:${{ github.event.inputs.gitlab_token }}@$HOST/".insteadOf "https://$HOST/"
+
+        git config --global credential.helper store
+
+        echo "https://oauth2:${{ github.event.inputs.gitlab_token }}@$HOST" > ~/.git-credentials
+
+        chmod 600 ~/.git-credentials
+
+    # Step 5 — Validate repository accessibility
+    - name: Validate repository access
+      run: |
+
+        echo "Checking repository reachability..."
+
+        git ls-remote "${{ github.event.inputs.vcs_url }}" > /dev/null
+
+        echo "Repository reachable"
+
+    # Step 6 — Run ORT
+    - name: Run ORT
+      uses: oss-review-toolkit/ort-ci-github-action@v1
+
+      env:
+        ORT_VCS_GIT_USERNAME: oauth2
+        ORT_VCS_GIT_PASSWORD: ${{ github.event.inputs.github_token != '' && github.event.inputs.github_token || github.event.inputs.gitlab_token }}
+
+      with:
+
+        # it is dynamic now, the values can be changed while triggering the workflow
+        vcs-url: ${{ github.event.inputs.vcs_url }}
+
+        vcs-revision: ${{ github.event.inputs.vcs_revision }}
+
+        allow-dynamic-versions: 'true'
+
+        run: >-
+          cache-dependencies,
+          labels,
+          analyzer,
+          scanner,
+          advisor,
+          evaluator,
+          reporter,
+          upload-results
+
+        ort-cli-args: '-P ort.scanner.skipExcluded=true'
+
+        ort-cli-scan-args: '--package-types=PROJECT'
